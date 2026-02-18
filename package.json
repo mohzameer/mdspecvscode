@@ -1,0 +1,129 @@
+{
+  "name": "mdspec",
+  "displayName": "mdspec",
+  "description": "Manual sync between local Markdown files and the mdspec platform",
+  "version": "0.0.1",
+  "publisher": "mdspec",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:mdspecSidebar",
+    "onCommand:mdspec.login",
+    "onCommand:mdspec.logout"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mdspec",
+          "title": "mdspec",
+          "icon": "resources/mdspec-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mdspec": [
+        {
+          "id": "mdspecSidebar",
+          "name": "mdspec",
+          "icon": "resources/mdspec-icon.svg"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "mdspec.login",
+        "title": "mdspec: Login"
+      },
+      {
+        "command": "mdspec.logout",
+        "title": "mdspec: Logout"
+      },
+      {
+        "command": "mdspec.syncFile",
+        "title": "Sync",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "mdspec.downloadSpec",
+        "title": "Download",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "mdspec.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mdspec.openInWeb",
+        "title": "Open in Web",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "mdspec.setProject",
+        "title": "mdspec: Set Project"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "mdspec.refresh",
+          "when": "view == mdspecSidebar",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mdspec.downloadSpec",
+          "when": "view == mdspecSidebar && viewItem == trackedFile",
+          "group": "inline"
+        },
+        {
+          "command": "mdspec.syncFile",
+          "when": "view == mdspecSidebar && viewItem == trackedFile || view == mdspecSidebar && viewItem == changedFile",
+          "group": "inline"
+        },
+        {
+          "command": "mdspec.openInWeb",
+          "when": "view == mdspecSidebar && viewItem == openInWeb",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "mdspec",
+      "properties": {
+        "mdspec.apiBaseUrl": {
+          "type": "string",
+          "default": "https://mdspec.dev/api",
+          "description": "Base URL for the mdspec API"
+        },
+        "mdspec.project": {
+          "type": "string",
+          "default": "",
+          "description": "mdspec project in org-slug/project-slug format (e.g. my-org/my-project)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
