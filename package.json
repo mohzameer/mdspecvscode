@@ -2,19 +2,18 @@
   "name": "mdspec",
   "displayName": "mdspec",
   "description": "Manual sync between local Markdown files and the mdspec platform",
-  "version": "0.0.1",
-  "publisher": "mdspec",
+  "version": "0.0.2",
+  "publisher": "xadlabs",
+  "license": "MIT",
+  "repository": "https://github.com/mohzameer/mdspecdev",
+  "icon": "resources/mdspec-icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onView:mdspecSidebar",
-    "onCommand:mdspec.login",
-    "onCommand:mdspec.logout"
-  ],
+  "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -67,6 +66,11 @@
       {
         "command": "mdspec.setProject",
         "title": "mdspec: Set Project"
+      },
+      {
+        "command": "mdspec.linkRemoteSpec",
+        "title": "Link to local file",
+        "icon": "$(link)"
       }
     ],
     "menus": {
@@ -91,6 +95,11 @@
         {
           "command": "mdspec.openInWeb",
           "when": "view == mdspecSidebar && viewItem == openInWeb",
+          "group": "inline"
+        },
+        {
+          "command": "mdspec.linkRemoteSpec",
+          "when": "view == mdspecSidebar && viewItem == remoteOnlySpec",
           "group": "inline"
         }
       ]

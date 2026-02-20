@@ -194,8 +194,13 @@ Untracked
      docs/notes.md
      README.md
 
+Remote only  2 specs on the server are not linked locally.
+  Run "mdspec list" to see them or "mdspec link <slug>" to pull one down.
+
 Legend: ✓ synced  ● local changes  ↓ never synced
 ```
+
+The remote-only hint line is omitted when all remote specs are already linked, or when the API call fails (status is best-effort; local state always renders).
 
 **`--json` output:**
 ```json
@@ -206,7 +211,8 @@ Legend: ✓ synced  ● local changes  ↓ never synced
     { "file": "docs/specs/api.md",  "state": "changed" },
     { "file": "docs/specs/security.md", "state": "unsynced" }
   ],
-  "untracked": ["docs/notes.md", "README.md"]
+  "untracked": ["docs/notes.md", "README.md"],
+  "remoteOnlyCount": 2
 }
 ```
 
@@ -351,7 +357,7 @@ Pulling docs/specs/auth.md…
 
 ### `mdspec list`
 
-List all specs visible to the authenticated user on the remote, along with their link status locally.
+List all specs on the remote project, clearly separated into linked and unlinked groups.
 
 ```
 mdspec list
@@ -361,12 +367,102 @@ mdspec list
 ```
 Remote specs (project: my-org / product-docs)
 
+Linked locally
   slug               name                  local file
   ─────────────────────────────────────────────────────────
   auth               Auth Spec             docs/specs/auth.md
   api-reference      API Reference         docs/specs/api.md
-  onboarding         Onboarding Flow       (not linked locally)
+
+Remote only  (not linked to any local file)
+  slug               name                  revision   updated
+  ─────────────────────────────────────────────────────────────────
+  onboarding         Onboarding Flow       4          2025-01-14
+  billing-flows      Billing Spec          2          2025-02-01
+
+Run "mdspec link <slug>" to download a remote-only spec as a local file.
 ```
+
+**`--json` output:**
+```json
+{
+  "linked": [
+    { "slug": "auth",          "name": "Auth Spec",       "file": "docs/specs/auth.md" },
+    { "slug": "api-reference", "name": "API Reference",   "file": "docs/specs/api.md"  }
+  ],
+  "remoteOnly": [
+    { "slug": "onboarding",    "name": "Onboarding Flow", "revision": 4, "updatedAt": "2025-01-14T..." },
+    { "slug": "billing-flows", "name": "Billing Spec",    "revision": 2, "updatedAt": "2025-02-01T..." }
+  ]
+}
+```
+
+Matching is done by `specId` (UUID), not slug, so renamed specs are handled correctly.
+
+Exit code: `0` always. The `remoteOnly` array in `--json` output can be used in scripts to detect unlinked specs.
+
+---
+
+### `mdspec link [slug]`
+
+Download a remote-only spec and create a new local file linked to it. This is the CLI equivalent of the extension's inline `[Link]` button in the `Remote Only` sidebar section.
+
+**Interactive (no slug provided — shows a picker):**
+```
+mdspec link
+```
+Fetches remote specs, filters out already-linked ones, presents an interactive list:
+```
+? Select a remote spec to link:
+❯ Onboarding Flow      (onboarding)
+  Billing Spec         (billing-flows)
+```
+
+**Direct (slug provided):**
+```
+mdspec link onboarding
+```
+
+**Full flow:**
+1. `GET /api/public/specs` — fetch remote specs, verify the slug is not already linked
+2. Prompt for local save path (pre-filled as `<specRoot>/<slug>.md`):
+   ```
+   Save as (relative to workspace root): [docs/specs/onboarding.md]
+   ```
+3. If a file already exists at that path → prompt: `File already exists. Overwrite? [y/N]`
+4. `GET /api/public/specs/[slug]` — download full content
+5. Write content to disk (creates parent directories if needed)
+6. Add entry to `trackedFiles` in config with `slug`, `specId`, and `lastHash`
+
+**`--path` flag (skip the save-path prompt):**
+```
+mdspec link onboarding --path docs/specs/onboarding.md
+```
+
+**`--yes` flag:**
+Suppress the overwrite confirmation prompt.
+
+**Output:**
+```
+Linking "Onboarding Flow" (onboarding)…
+Save as: docs/specs/onboarding.md
+✓ Linked  →  docs/specs/onboarding.md  (revision 4)
+```
+
+**`--json` output:**
+```json
+{ "status": "linked", "slug": "onboarding", "file": "docs/specs/onboarding.md", "revision": 4 }
+```
+
+**Error cases:**
+
+| Scenario | Output |
+|---|---|
+| Slug already linked | `✗ "onboarding" is already linked to docs/specs/onboarding.md` |
+| Slug not found on remote | `✗ Spec "onboarding" not found in this project` |
+| File exists, no `--yes` | Prompts for confirmation; aborts if user answers N |
+| No remote-only specs exist | `✓ All remote specs are already linked locally` |
+
+Exit code: `0` on success, `1` on error or user cancellation.
 
 ---
 
@@ -436,6 +532,8 @@ Stored keys:
 | `404 Not Found` | Spec doesn't exist or no access | `✗ Spec not found: [slug]` |
 | `409 Conflict` | Slug collision on create | `✗ Slug already taken. Use --slug <custom-slug> to specify one.` |
 | Local changes on pull | Pull blocked by local edits | `✗ Local changes detected. Sync first or use --force.` |
+| Slug already linked (`link`) | Spec already in `trackedFiles` | `✗ "onboarding" is already linked to docs/specs/onboarding.md` |
+| No remote-only specs (`link`) | Nothing left to link | `✓ All remote specs are already linked locally` |
 | Network failure | No connectivity | `✗ Network error. Check your connection.` |
 | Server error (5xx) | mdspec platform issue | `✗ Server error (503). Try again later.` |
 | Not authenticated | No token stored | `✗ Not signed in. Run: mdspec login` |
@@ -503,14 +601,15 @@ The CLI will **not**:
 | `mdspec logout` | Clear stored credentials |
 | `mdspec whoami` | Show logged-in user |
 | `mdspec init` | Link directory to an mdspec project |
-| `mdspec status` | Show sync state of all tracked files |
+| `mdspec status` | Show sync state of all tracked files, plus remote-only count |
 | `mdspec track <file>` | Add file to tracking |
 | `mdspec untrack <file>` | Remove file from tracking |
 | `mdspec sync [file]` | Upload file(s) to mdspec |
 | `mdspec sync --all` | Upload all changed tracked files |
 | `mdspec pull [file]` | Download latest spec content |
 | `mdspec pull --all` | Pull all tracked files |
-| `mdspec list` | List remote specs and local link status |
+| `mdspec list` | List all remote specs grouped by linked / remote-only |
+| `mdspec link [slug]` | Download a remote-only spec as a new local file |
 | `mdspec open [file]` | Open spec in browser |
 
 ---

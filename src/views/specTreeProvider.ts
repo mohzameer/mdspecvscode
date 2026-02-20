@@ -1,24 +1,45 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import { MdspecClient, SpecEntry } from '../api/mdspecClient';
+import { AuthManager } from '../auth/authManager';
 import { ConfigManager } from '../config/configManager';
 import { FileScanner } from '../scanner/fileScanner';
 import { computeHash } from '../utils/hashUtils';
 
-type TreeItemType = 'project' | 'trackedFile' | 'changedFile' | 'untrackedFile' | 'info' | 'openInWeb';
+type TreeItemType =
+  | 'project'
+  | 'localSection'
+  | 'remoteSection'
+  | 'trackedFile'
+  | 'changedFile'
+  | 'untrackedFile'
+  | 'remoteOnlySpec'
+  | 'remoteError'
+  | 'info'
+  | 'openInWeb';
 
 export class SpecTreeItem extends vscode.TreeItem {
+  public remoteSpec?: SpecEntry;
+
   constructor(
     public readonly label: string,
     public readonly itemType: TreeItemType,
-    public readonly relativePath?: string
+    public readonly relativePath?: string,
+    collapsibleState?: vscode.TreeItemCollapsibleState
   ) {
-    super(label, vscode.TreeItemCollapsibleState.None);
+    super(label, collapsibleState ?? vscode.TreeItemCollapsibleState.None);
     this.contextValue = itemType;
 
     switch (itemType) {
       case 'project':
         this.iconPath = new vscode.ThemeIcon('project');
+        break;
+      case 'localSection':
+        this.iconPath = new vscode.ThemeIcon('folder-opened');
+        break;
+      case 'remoteSection':
+        this.iconPath = new vscode.ThemeIcon('cloud');
         break;
       case 'trackedFile':
         this.iconPath = new vscode.ThemeIcon('file');
@@ -32,6 +53,12 @@ export class SpecTreeItem extends vscode.TreeItem {
       case 'untrackedFile':
         this.iconPath = new vscode.ThemeIcon('file');
         this.checkboxState = vscode.TreeItemCheckboxState.Unchecked;
+        break;
+      case 'remoteOnlySpec':
+        this.iconPath = new vscode.ThemeIcon('cloud-download');
+        break;
+      case 'remoteError':
+        this.iconPath = new vscode.ThemeIcon('warning');
         break;
       case 'info':
         this.iconPath = new vscode.ThemeIcon('info');
@@ -48,12 +75,20 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private fileScanner: FileScanner;
+  private cachedRemoteSpecs: SpecEntry[] | null = null;
+  private remoteFetchError: string | null = null;
 
-  constructor(private configManager: ConfigManager) {
+  constructor(
+    private configManager: ConfigManager,
+    private client: MdspecClient,
+    private authManager: AuthManager
+  ) {
     this.fileScanner = new FileScanner();
   }
 
   refresh(): void {
+    this.cachedRemoteSpecs = null;
+    this.remoteFetchError = null;
     this._onDidChangeTreeData.fire();
   }
 
@@ -62,15 +97,24 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
   }
 
   async getChildren(element?: SpecTreeItem): Promise<SpecTreeItem[]> {
-    if (element) {
-      return [];
+    if (!element) {
+      return this.getRootItems();
     }
 
-    const items: SpecTreeItem[] = [];
+    if (element.itemType === 'localSection') {
+      return this.getLocalFileItems();
+    }
 
-    // Load config
+    if (element.itemType === 'remoteSection') {
+      return this.getRemoteOnlyItems();
+    }
+
+    return [];
+  }
+
+  private async getRootItems(): Promise<SpecTreeItem[]> {
     await this.configManager.load();
-    const config = this.configManager.getConfig();
+    const items: SpecTreeItem[] = [];
 
     // Project node
     const project = this.configManager.getProject();
@@ -79,9 +123,49 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
       : 'Project: Not linked';
     items.push(new SpecTreeItem(projectLabel, 'project'));
 
-    // Scan for .md files
+    // Local Specs section — always expanded
+    items.push(
+      new SpecTreeItem(
+        'Local Specs',
+        'localSection',
+        undefined,
+        vscode.TreeItemCollapsibleState.Expanded
+      )
+    );
+
+    // Remote Only section — only shown when authenticated
+    const isAuth = await this.authManager.isAuthenticated();
+    if (isAuth) {
+      const unlinkedCount = this.cachedRemoteSpecs
+        ? this.getUnlinkedSpecs(this.cachedRemoteSpecs).length
+        : undefined;
+
+      const sectionLabel =
+        unlinkedCount !== undefined && unlinkedCount > 0
+          ? `Remote Only  (${unlinkedCount})`
+          : 'Remote Only';
+
+      items.push(
+        new SpecTreeItem(
+          sectionLabel,
+          'remoteSection',
+          undefined,
+          vscode.TreeItemCollapsibleState.Collapsed
+        )
+      );
+    }
+
+    // Open in Web
+    items.push(new SpecTreeItem('Open in Web', 'openInWeb'));
+
+    return items;
+  }
+
+  private async getLocalFileItems(): Promise<SpecTreeItem[]> {
+    const config = this.configManager.getConfig();
     const allFiles = await this.fileScanner.scan(config.specRoot);
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const items: SpecTreeItem[] = [];
 
     for (const relativePath of allFiles) {
       const tracked = this.configManager.isTracked(relativePath);
@@ -97,24 +181,97 @@ export class SpecTreeProvider implements vscode.TreeDataProvider<SpecTreeItem> {
             const currentHash = computeHash(content);
             hasChanges = currentHash !== entry.lastHash;
           } catch {
-            // File may have been deleted; show as tracked without change indicator
+            // File deleted — show as tracked without change indicator
           }
         } else if (!entry?.lastHash) {
-          // Never synced yet — treat as changed so sync button appears
+          // Never synced yet — show sync button
           hasChanges = true;
         }
 
         const itemType = hasChanges ? 'changedFile' : 'trackedFile';
         items.push(new SpecTreeItem(path.basename(relativePath), itemType, relativePath));
       } else {
-        items.push(new SpecTreeItem(path.basename(relativePath), 'untrackedFile', relativePath));
+        items.push(
+          new SpecTreeItem(path.basename(relativePath), 'untrackedFile', relativePath)
+        );
       }
     }
 
-    // Open in Web node
-    items.push(new SpecTreeItem('Open in Web', 'openInWeb'));
-
     return items;
+  }
+
+  private async getRemoteOnlyItems(): Promise<SpecTreeItem[]> {
+    // Serve from cache
+    if (this.cachedRemoteSpecs !== null) {
+      return this.buildRemoteItems(this.cachedRemoteSpecs);
+    }
+
+    if (this.remoteFetchError !== null) {
+      return [
+        new SpecTreeItem(
+          'Could not load remote specs — click Refresh to retry',
+          'remoteError'
+        ),
+      ];
+    }
+
+    // Fetch from API
+    try {
+      const token = await this.authManager.getToken();
+      if (!token) {
+        return [new SpecTreeItem('Sign in to view remote specs', 'info')];
+      }
+
+      const response = await this.client.listSpecs(token);
+      this.cachedRemoteSpecs = response.specs;
+      this.remoteFetchError = null;
+
+      // Defer a root refresh so the section label count updates
+      setTimeout(() => this._onDidChangeTreeData.fire(), 0);
+
+      return this.buildRemoteItems(response.specs);
+    } catch (err) {
+      this.remoteFetchError = err instanceof Error ? err.message : 'Unknown error';
+      return [
+        new SpecTreeItem(
+          'Could not load remote specs — click Refresh to retry',
+          'remoteError'
+        ),
+      ];
+    }
+  }
+
+  private getUnlinkedSpecs(allSpecs: SpecEntry[]): SpecEntry[] {
+    const trackedFiles = this.configManager.getTrackedFiles();
+    const linkedSpecIds = new Set(
+      Object.values(trackedFiles)
+        .map(f => f.specId)
+        .filter((id): id is string => !!id)
+    );
+    return allSpecs.filter(spec => !linkedSpecIds.has(spec.id));
+  }
+
+  private buildRemoteItems(allSpecs: SpecEntry[]): SpecTreeItem[] {
+    const unlinked = this.getUnlinkedSpecs(allSpecs);
+
+    if (unlinked.length === 0) {
+      return [new SpecTreeItem('All remote specs are linked locally', 'info')];
+    }
+
+    return unlinked.map(spec => {
+      const item = new SpecTreeItem(spec.name, 'remoteOnlySpec');
+      item.remoteSpec = spec;
+      item.description = spec.slug;
+      item.tooltip = new vscode.MarkdownString(
+        [
+          `**${spec.name}**`,
+          `Slug: \`${spec.slug}\``,
+          `Revision: ${spec.latest_revision?.revision_number ?? 'N/A'}`,
+          `Updated: ${new Date(spec.updated_at).toLocaleDateString()}`,
+        ].join('\n\n')
+      );
+      return item;
+    });
   }
 
   async handleCheckboxChange(

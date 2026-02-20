@@ -210,6 +210,65 @@ export class SyncEngine {
     }
   }
 
+  async linkRemoteSpec(
+    slug: string,
+    specId: string,
+    specName: string,
+    localRelativePath: string
+  ): Promise<SyncResult> {
+    const token = await this.authManager.requireToken();
+    if (!token) {
+      return { status: 'error', message: 'Not authenticated. Please login first.' };
+    }
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      return { status: 'error', message: 'No workspace folder open.' };
+    }
+
+    const fullPath = path.join(workspaceRoot, localRelativePath);
+
+    if (fs.existsSync(fullPath)) {
+      const answer = await vscode.window.showWarningMessage(
+        `A file already exists at "${localRelativePath}". Overwrite it with the remote content?`,
+        { modal: true },
+        'Overwrite'
+      );
+      if (answer !== 'Overwrite') {
+        return { status: 'error', message: 'Cancelled by user.' };
+      }
+    }
+
+    try {
+      const response = await this.client.getSpec(token, slug);
+      const content = response.content;
+
+      const dir = path.dirname(fullPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(fullPath, content, 'utf-8');
+
+      const hash = computeHash(content);
+      await this.configManager.setTrackedFile(localRelativePath, {
+        slug,
+        specId,
+        lastHash: hash,
+      });
+
+      vscode.window.showInformationMessage(
+        `mdspec: Linked "${specName}" → ${localRelativePath}`
+      );
+
+      return {
+        status: 'success',
+        revisionNumber: response.spec.latest_revision?.revision_number,
+      };
+    } catch (err) {
+      return this.handleSyncError(err, localRelativePath);
+    }
+  }
+
   private handleSyncError(err: unknown, relativePath: string): SyncResult {
     if (err instanceof MdspecApiError) {
       if (err.statusCode === 401) {

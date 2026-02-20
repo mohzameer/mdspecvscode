@@ -12,7 +12,7 @@ export function activate(context: vscode.ExtensionContext) {
   const authManager = new AuthManager(context);
   const configManager = new ConfigManager();
   const syncEngine = new SyncEngine(client, authManager, configManager);
-  const treeProvider = new SpecTreeProvider(configManager);
+  const treeProvider = new SpecTreeProvider(configManager, client, authManager);
 
   // Register tree view
   const treeView = vscode.window.createTreeView('mdspecSidebar', {
@@ -80,6 +80,42 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const result = await syncEngine.downloadSpec(item.relativePath);
+      if (result.status === 'success') {
+        treeProvider.refresh();
+      }
+    })
+  );
+
+  // Link remote spec — prompt user for local path, download, add to config
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdspec.linkRemoteSpec', async (item?: SpecTreeItem) => {
+      if (!item?.remoteSpec) {
+        vscode.window.showWarningMessage('mdspec: No remote spec selected.');
+        return;
+      }
+
+      const { slug, id: specId, name: specName } = item.remoteSpec;
+
+      await configManager.load();
+      const specRoot = configManager.getSpecRoot() ?? '.';
+      const suggested = `${specRoot}/${slug}.md`.replace(/^\.\//, '');
+
+      const localPath = await vscode.window.showInputBox({
+        prompt: `Save "${specName}" as (relative to workspace root)`,
+        value: suggested,
+        ignoreFocusOut: true,
+        validateInput: (val) => {
+          if (!val.trim()) { return 'Path cannot be empty'; }
+          if (!val.endsWith('.md')) { return 'File must have a .md extension'; }
+          return null;
+        },
+      });
+
+      if (!localPath) {
+        return;
+      }
+
+      const result = await syncEngine.linkRemoteSpec(slug, specId, specName, localPath.trim());
       if (result.status === 'success') {
         treeProvider.refresh();
       }
