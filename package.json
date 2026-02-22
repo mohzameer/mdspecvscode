@@ -71,6 +71,11 @@
         "command": "mdspec.linkRemoteSpec",
         "title": "Link to local file",
         "icon": "$(link)"
+      },
+      {
+        "command": "mdspec.unlinkSpec",
+        "title": "Unlink (keep local file)",
+        "icon": "$(link)"
       }
     ],
     "menus": {
@@ -88,8 +93,18 @@
           "group": "inline"
         },
         {
+          "command": "mdspec.downloadSpec",
+          "when": "view == mdspecSidebar && viewItem == linkedFile",
+          "group": "inline"
+        },
+        {
+          "command": "mdspec.unlinkSpec",
+          "when": "view == mdspecSidebar && viewItem == linkedFile",
+          "group": "inline"
+        },
+        {
           "command": "mdspec.syncFile",
-          "when": "view == mdspecSidebar && viewItem == trackedFile || view == mdspecSidebar && viewItem == changedFile",
+          "when": "view == mdspecSidebar && viewItem != linkedFile && (viewItem == trackedFile || viewItem == changedFile)",
           "group": "inline"
         },
         {
@@ -101,17 +116,17 @@
           "command": "mdspec.linkRemoteSpec",
           "when": "view == mdspecSidebar && viewItem == remoteOnlySpec",
           "group": "inline"
+        },
+        {
+          "command": "mdspec.linkRemoteSpec",
+          "when": "view == mdspecSidebar && viewItem == remoteLinkedSpec",
+          "group": "inline"
         }
       ]
     },
     "configuration": {
       "title": "mdspec",
       "properties": {
-        "mdspec.apiBaseUrl": {
-          "type": "string",
-          "default": "https://mdspec.dev/api",
-          "description": "Base URL for the mdspec API"
-        },
         "mdspec.project": {
           "type": "string",
           "default": "",

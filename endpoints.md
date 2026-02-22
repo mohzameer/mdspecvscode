@@ -45,12 +45,47 @@ Authenticate specifically for API usage to get an access token.
 
 ---
 
-### 2. List Specs
-Get a list of all specifications visible to the authenticated user.
+### 2. Refresh Token
+Get a new access token using a refresh token.
+
+- **URL**: `/api/public/auth/refresh`
+- **Method**: `POST`
+- **Content-Type**: `application/json`
+
+#### Request Body
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `refresh_token` | string | Yes | The refresh token obtained from login |
+
+#### Response (200 OK)
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "user@example.com"
+  },
+  "session": {
+    "access_token": "new_jwt_token_string",
+    "refresh_token": "new_refresh_token_string",
+    "expires_in": 3600,
+    "token_type": "bearer"
+  }
+}
+```
+
+---
+
+### 3. List Specs
+Get a list of all specifications visible to the authenticated user. This includes natively owned specs as well as linked proxy specs. For linked proxy specs, `source_spec_id` will be populated, and the `latest_revision` metadata is dynamically resolved from the original source spec.
 
 - **URL**: `/api/public/specs`
 - **Method**: `GET`
 - **Headers**: `Authorization: Bearer <token>`
+
+#### Query Parameters
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project_slug` | string | No | Filter specs by a specific project's slug |
 
 #### Response (200 OK)
 ```json
@@ -62,6 +97,9 @@ Get a list of all specifications visible to the authenticated user.
       "slug": "spec-slug",
       "updated_at": "2024-01-01T00:00:00Z",
       "project_id": "uuid",
+      "project_name": "Project Name",
+      "source_spec_id": null,
+      "is_linked": false,
       "latest_revision": {
         "revision_number": 2,
         "content_hash": "sha256_hash_string",
@@ -72,12 +110,47 @@ Get a list of all specifications visible to the authenticated user.
 }
 ```
 
+### 4. Remove Linked Spec
+Remove a linked specification proxy from a project. This does not affect the original source specification.
+
+- **URL**: `/api/public/specs/[slug_or_id_or_source_id]`
+- **Method**: `DELETE`
+- **Headers**: `Authorization: Bearer <token>`
+
+#### Query Parameters
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project_slug` | string | No | The slug of the project the linked spec is in. Required if the provided ID is a `source_spec_id` that is linked in multiple projects by the same owner. |
+| `project_id` | string | No | The UUID of the project. If provided, takes precedence over `project_slug`. |
+
+**Response (Success)**
+```json
+{
+  "success": true,
+  "message": "Linked specification removed successfully"
+}
+```
+
+**Response (Error - Multiple Links Found)**
+```json
+{
+  "error": "Multiple linked specifications found for this ID. Please append ?project_slug=<your_project> or ?project_id=<id> to the URL to specify which one to remove."
+}
+```
+
+**Response (Error - Not a linked spec)**
+```json
+{
+  "error": "Cannot unlink a non-linked specification"
+}
+```
+
 ---
 
-### 3. Get Spec (Download)
-Retrieve a specific specification by its slug, including its full markdown content.
+### 5. Get Spec (Download)
+Retrieve a specific specification by its slug (or UUID), including its full markdown content.
 
-- **URL**: `/api/public/specs/[slug]`
+- **URL**: `/api/public/specs/[slug_or_id]`
 - **Method**: `GET`
 - **Headers**: `Authorization: Bearer <token>`
 
@@ -90,6 +163,7 @@ Retrieve a specific specification by its slug, including its full markdown conte
     "slug": "spec-slug",
     "updated_at": "2024-01-01T00:00:00Z",
     "project_id": "uuid",
+    "source_spec_id": null,
     "latest_revision": {
       "revision_number": 5,
       "content_hash": "sha256_hash",
@@ -105,7 +179,7 @@ Retrieve a specific specification by its slug, including its full markdown conte
 
 ---
 
-### 4. Create Spec
+### 6. Create Spec
 Create a new specification.
 
 - **URL**: `/api/public/specs`
@@ -117,7 +191,8 @@ Create a new specification.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | Yes | Title of the specification |
-| `content` | string | Yes | Initial markdown content |
+| `content` | string | **Conditional** | Initial markdown content. Required unless `source_spec_id` is provided. |
+| `source_spec_id` | string | **Conditional** | UUID of a source specification to link to. If provided, `content` is ignored and a linked spec is created. |
 | `file_name` | string | No | Original file name (e.g., README.md) |
 | `project_slug` | string | No | **Recommended**. The slug of the project to create the spec in. |
 | `org_slug` | string | No | **Recommended**. The slug of the organization the project belongs to. Used to resolve ambiguous project slugs. |
@@ -132,22 +207,25 @@ Create a new specification.
     "id": "uuid",
     "slug": "generated-slug",
     "name": "Spec Name",
+    "source_spec_id": null,
     "latest_revision_number": 1
   }
 }
 ```
 
-> **Note:** If neither `project_id` nor `project_slug` is provided, the API attempts to assign the spec to the user's first available project. Behavior is undefined if the user has multiple projects but no default context.
+> **Note on Linked Specs:** If `source_spec_id` is provided, the API creates a lightweight proxy that synchronizes with the source spec. In this case, `latest_revision_number` will be `null` in the immediate response, as revisions are fetched dynamically from the source spec going forward.
+
+> **Note on Projects:** If neither `project_id` nor `project_slug` is provided, the API attempts to assign the spec to the user's first available project. Behavior is undefined if the user has multiple projects but no default context.
 
 #### Errors
 - `409 Conflict`: If the provided or generated slug already exists.
 
 ---
 
-### 4. Upload Revision
+### 7. Upload Revision
 Upload a new version of content for an existing specification.
 
-- **URL**: `/api/public/specs/[slug]/revisions`
+- **URL**: `/api/public/specs/[slug_or_id]/revisions`
 - **Method**: `POST`
 - **Headers**: `Authorization: Bearer <token>`
 - **Content-Type**: `application/json`
@@ -169,6 +247,9 @@ Upload a new version of content for an existing specification.
   }
 }
 ```
+
+#### Linked Specifications
+If the target specification is a linked spec (i.e., `source_spec_id` is present), this API will return a `403 Forbidden` error. Revisions must be uploaded to the original source specification, not the proxy.
 
 #### Deduplication
 If the uploaded `content` is identical to the latest revision (based on SHA-256 hash), a new revision is **not** created.

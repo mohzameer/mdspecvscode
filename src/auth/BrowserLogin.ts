@@ -1,15 +1,13 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
+import { WEB_BASE_URL } from '../utils/constants';
 
 export interface SessionRecipient {
   saveSession(accessToken: string, refreshToken: string, email: string): Promise<void>;
 }
 
 function getWebBaseUrl(): string {
-  const apiBaseUrl = vscode.workspace
-    .getConfiguration('mdspec')
-    .get<string>('apiBaseUrl', 'https://mdspec.dev/api');
-  return apiBaseUrl.replace(/\/api$/, '');
+  return WEB_BASE_URL;
 }
 
 export async function startBrowserLogin(recipient: SessionRecipient): Promise<void> {

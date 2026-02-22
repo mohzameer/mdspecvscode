@@ -32,7 +32,6 @@ export class SyncEngine {
     if (!token) {
       return { status: 'error', message: 'Not authenticated. Please login first.' };
     }
-
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) {
       return { status: 'error', message: 'No workspace folder open.' };
@@ -55,18 +54,35 @@ export class SyncEngine {
       return { status: 'error', message: 'File is not tracked.' };
     }
 
-    // First sync — no slug yet
-    if (!entry.slug) {
-      return this.firstSync(relativePath, content, currentHash, token);
+    if (entry.isLinked) {
+      vscode.window.showErrorMessage(
+        'mdspec: Cannot sync — this spec is linked and read-only. Use Download to pull the latest version.'
+      );
+      return { status: 'error', message: 'Linked spec is read-only.' };
     }
 
-    // Subsequent sync — check for changes
-    if (entry.lastHash === currentHash) {
-      vscode.window.showInformationMessage(`mdspec: No changes in ${relativePath}`);
-      return { status: 'no-change' };
-    }
+    const doSync = async (t: string): Promise<SyncResult> => {
+      if (!entry.slug) {
+        return this.firstSync(relativePath, content, currentHash, t);
+      }
+      if (entry.lastHash === currentHash) {
+        vscode.window.showInformationMessage(`mdspec: No changes in ${relativePath}`);
+        return { status: 'no-change' };
+      }
+      return this.subsequentSync(relativePath, entry.slug, content, currentHash, t);
+    };
 
-    return this.subsequentSync(relativePath, entry.slug, content, currentHash, token);
+    try {
+      return await doSync(token);
+    } catch (err) {
+      if (err instanceof MdspecApiError && err.statusCode === 401) {
+        const newToken = await this.authManager.refreshAccessToken(this.client);
+        if (newToken) {
+          return await doSync(newToken);
+        }
+      }
+      return this.handleSyncError(err, relativePath);
+    }
   }
 
   private async firstSync(
@@ -101,6 +117,7 @@ export class SyncEngine {
 
       return { status: 'success', revisionNumber: response.spec.latest_revision_number };
     } catch (err) {
+      if (err instanceof MdspecApiError && err.statusCode === 401) throw err;
       return this.handleSyncError(err, relativePath);
     }
   }
@@ -141,6 +158,7 @@ export class SyncEngine {
 
       return { status: 'success', revisionNumber: response.revision?.revision_number };
     } catch (err) {
+      if (err instanceof MdspecApiError && err.statusCode === 401) throw err;
       return this.handleSyncError(err, relativePath);
     }
   }
@@ -157,9 +175,9 @@ export class SyncEngine {
     }
 
     const entry = this.configManager.getTrackedFile(relativePath);
-    if (!entry?.slug) {
+    if (!entry?.slug && !entry?.specId) {
       vscode.window.showErrorMessage('mdspec: File has not been synced yet. Cannot download.');
-      return { status: 'error', message: 'No remote slug — file has not been synced yet.' };
+      return { status: 'error', message: 'No remote slug or spec id — file has not been synced yet.' };
     }
 
     // Check for local changes — block download if dirty
@@ -177,19 +195,23 @@ export class SyncEngine {
       // File doesn't exist locally — safe to download
     }
 
-    // Fetch remote content
-    try {
-      const response = await this.client.getSpec(token, entry.slug);
+    const doDownload = async (t: string): Promise<SyncResult> => {
+      let response: Awaited<ReturnType<MdspecClient['getSpecById']>>;
+      if (entry.specId) {
+        response = await this.client.getSpecById(t, entry.specId);
+      } else if (entry.slug) {
+        response = await this.client.getSpec(t, entry.slug);
+      } else {
+        return { status: 'error', message: 'No remote slug or spec id — file has not been synced yet.' };
+      }
       const remoteContent = response.content;
 
-      // Write to local file
       const dir = path.dirname(fullPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
       fs.writeFileSync(fullPath, remoteContent, 'utf-8');
 
-      // Update hash in config
       const newHash = computeHash(remoteContent);
       await this.configManager.setTrackedFile(relativePath, {
         ...entry,
@@ -201,7 +223,17 @@ export class SyncEngine {
       );
 
       return { status: 'success', revisionNumber: response.spec.latest_revision?.revision_number };
+    };
+
+    try {
+      return await doDownload(token);
     } catch (err) {
+      if (err instanceof MdspecApiError && err.statusCode === 401) {
+        const newToken = await this.authManager.refreshAccessToken(this.client);
+        if (newToken) {
+          return await doDownload(newToken);
+        }
+      }
       if (err instanceof MdspecApiError && err.statusCode === 404) {
         vscode.window.showErrorMessage(`mdspec: Spec not found on server for ${relativePath}`);
         return { status: 'error', message: 'Spec not found (404).' };
@@ -214,7 +246,8 @@ export class SyncEngine {
     slug: string,
     specId: string,
     specName: string,
-    localRelativePath: string
+    localRelativePath: string,
+    projectId?: string
   ): Promise<SyncResult> {
     const token = await this.authManager.requireToken();
     if (!token) {
@@ -239,10 +272,20 @@ export class SyncEngine {
       }
     }
 
-    try {
-      const response = await this.client.getSpec(token, slug);
+    const doLink = async (t: string): Promise<SyncResult> => {
+      // Try by id first; if 404, try by slug + project_id (backend may support one or the other)
+      let response: Awaited<ReturnType<MdspecClient['getSpecById']>>;
+      try {
+        response = await this.client.getSpecById(t, specId);
+      } catch (err) {
+        if (err instanceof MdspecApiError && err.statusCode === 404 && projectId) {
+          console.log('[mdspec] getSpecById 404, trying getSpec(slug, projectId)');
+          response = await this.client.getSpec(t, slug, projectId);
+        } else {
+          throw err;
+        }
+      }
       const content = response.content;
-
       const dir = path.dirname(fullPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -254,6 +297,7 @@ export class SyncEngine {
         slug,
         specId,
         lastHash: hash,
+        isLinked: true,
       });
 
       vscode.window.showInformationMessage(
@@ -264,8 +308,93 @@ export class SyncEngine {
         status: 'success',
         revisionNumber: response.spec.latest_revision?.revision_number,
       };
+    };
+
+    try {
+      return await doLink(token);
     } catch (err) {
+      if (err instanceof MdspecApiError && err.statusCode === 401) {
+        const newToken = await this.authManager.refreshAccessToken(this.client);
+        if (newToken) {
+          return await doLink(newToken);
+        }
+      }
+      if (err instanceof MdspecApiError && err.statusCode === 404) {
+        vscode.window.showErrorMessage(
+          'mdspec: Spec not found (404). The API may need to support GET by spec id or GET by slug with project_id.'
+        );
+        return { status: 'error', message: 'Spec not found (404).' };
+      }
       return this.handleSyncError(err, localRelativePath);
+    }
+  }
+
+  /** Remove the link (delete linked spec on server, untrack locally). Local file is kept. */
+  async unlinkSpec(relativePath: string): Promise<SyncResult> {
+    const token = await this.authManager.requireToken();
+    if (!token) {
+      return { status: 'error', message: 'Not authenticated. Please login first.' };
+    }
+
+    const entry = this.configManager.getTrackedFile(relativePath);
+    if (!entry?.isLinked || !entry.specId) {
+      vscode.window.showWarningMessage('mdspec: Only linked specs can be unlinked.');
+      return { status: 'error', message: 'Not a linked spec.' };
+    }
+
+    const doUnlink = async (t: string): Promise<SyncResult> => {
+      // List specs (project_slug) returns the proxy row for this project. Resolve proxy id by slug or source_spec_id; then DELETE /specs/{proxy_id} only (no project query).
+      const projectSlug = this.configManager.getProjectSlug();
+      if (!projectSlug || !entry.slug) {
+        vscode.window.showErrorMessage(
+          'mdspec: Set project (org/project) to unlink. The proxy id is resolved from the project spec list.'
+        );
+        return { status: 'error', message: 'Project not set. Set mdspec project to unlink.' };
+      }
+      const list = await this.client.listSpecs(t, projectSlug);
+      const srcId = (s: { source_spec_id?: string | null; sourceSpecId?: string }) =>
+        s.source_spec_id ?? s.sourceSpecId;
+      const isLinked = (s: { is_linked?: boolean; isLinked?: boolean }) => s.is_linked ?? s.isLinked;
+      const norm = (x: string) => x.toLowerCase().trim();
+      // Prefer spec with is_linked true (the proxy); fallback to slug or source_spec_id match per endpoints.md
+      const proxy =
+        list.specs.find((s) => isLinked(s) && norm(s.slug) === norm(entry.slug!)) ??
+        list.specs.find((s) => isLinked(s) && srcId(s) === entry.specId) ??
+        list.specs.find((s) => norm(s.slug) === norm(entry.slug!)) ??
+        list.specs.find((s) => srcId(s) === entry.specId);
+      if (!proxy) {
+        // No link on server (proxy not in list): remove link locally so the spec can appear in Remote Only
+        await this.configManager.untrackFile(relativePath);
+        vscode.window.showInformationMessage(
+          `mdspec: Link removed locally (spec was not in project list). Local file kept; you can link again from Remote Only if needed.`
+        );
+        return { status: 'success' };
+      }
+      await this.client.deleteLinkedSpec(t, proxy.id, undefined);
+      await this.configManager.untrackFile(relativePath);
+      vscode.window.showInformationMessage(`mdspec: Unlinked. Local file "${relativePath}" was kept.`);
+      return { status: 'success' };
+    };
+
+    try {
+      return await doUnlink(token);
+    } catch (err) {
+      if (err instanceof MdspecApiError && err.statusCode === 401) {
+        const newToken = await this.authManager.refreshAccessToken(this.client);
+        if (newToken) {
+          return await doUnlink(newToken);
+        }
+      }
+      if (err instanceof MdspecApiError && err.statusCode === 400) {
+        const msg = err.message.includes('Multiple linked')
+          ? 'Spec is linked in multiple projects. Set mdspec project (org/project) and try again.'
+          : err.message.includes('non-linked')
+            ? 'Not a linked spec on the server.'
+            : err.message;
+        vscode.window.showErrorMessage(`mdspec: ${msg}`);
+        return { status: 'error', message: msg };
+      }
+      return this.handleSyncError(err, relativePath);
     }
   }
 

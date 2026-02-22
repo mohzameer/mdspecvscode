@@ -6,6 +6,7 @@ export interface TrackedFileEntry {
   slug?: string;
   specId?: string;
   lastHash?: string;
+  isLinked?: boolean;
 }
 
 export interface MdspecConfig {

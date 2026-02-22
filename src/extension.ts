@@ -86,6 +86,20 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Unlink (remove link on server, untrack locally; local file is kept)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mdspec.unlinkSpec', async (item?: SpecTreeItem) => {
+      if (!item?.relativePath) {
+        vscode.window.showWarningMessage('mdspec: No file selected.');
+        return;
+      }
+      const result = await syncEngine.unlinkSpec(item.relativePath);
+      if (result.status === 'success') {
+        treeProvider.refresh();
+      }
+    })
+  );
+
   // Link remote spec — prompt user for local path, download, add to config
   context.subscriptions.push(
     vscode.commands.registerCommand('mdspec.linkRemoteSpec', async (item?: SpecTreeItem) => {
@@ -94,7 +108,8 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const { slug, id: specId, name: specName } = item.remoteSpec;
+      const { slug, id: specId, name: specName, project_id: projectId } = item.remoteSpec;
+      console.log('[mdspec] linkRemoteSpec selected:', { slug, specId, specName, projectId });
 
       await configManager.load();
       const specRoot = configManager.getSpecRoot() ?? '.';
@@ -115,7 +130,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const result = await syncEngine.linkRemoteSpec(slug, specId, specName, localPath.trim());
+      const result = await syncEngine.linkRemoteSpec(slug, specId, specName, localPath.trim(), projectId);
       if (result.status === 'success') {
         treeProvider.refresh();
       }

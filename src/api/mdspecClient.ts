@@ -1,4 +1,4 @@
-import * as vscode from 'vscode';
+import { API_BASE_URL } from '../utils/constants';
 
 export interface LoginResponse {
   user: {
@@ -17,8 +17,12 @@ export interface SpecEntry {
   id: string;
   name: string;
   slug: string;
+  file_name?: string | null;
   updated_at: string;
   project_id: string;
+  is_linked?: boolean;
+  /** Set for linked specs: id of the source spec. DELETE unlink must use this spec's `id` (proxy id), not source_spec_id. */
+  source_spec_id?: string | null;
   latest_revision?: {
     revision_number: number;
     content_hash: string;
@@ -47,6 +51,7 @@ export interface GetSpecResponse {
     slug: string;
     updated_at: string;
     project_id: string;
+    is_linked?: boolean;
     latest_revision?: {
       revision_number: number;
       content_hash: string;
@@ -76,7 +81,7 @@ export class MdspecApiError extends Error {
 
 export class MdspecClient {
   private getBaseUrl(): string {
-    return vscode.workspace.getConfiguration('mdspec').get<string>('apiBaseUrl', 'https://mdspec.dev/api');
+    return API_BASE_URL;
   }
 
   private async request<T>(
@@ -101,12 +106,18 @@ export class MdspecClient {
 
     if (body) {
       options.body = JSON.stringify(body);
+      console.log(`[mdspec] Request body:`, JSON.stringify(body, null, 2));
     }
+
+    console.log(`[mdspec] ${method} ${url}`);
 
     const response = await fetch(url, options);
 
+    console.log(`[mdspec] ${method} ${url} → ${response.status}`);
+
     if (!response.ok) {
       const text = await response.text();
+      console.error(`[mdspec] Error body: ${text}`);
       throw new MdspecApiError(response.status, text || `HTTP ${response.status}`);
     }
 
@@ -120,16 +131,49 @@ export class MdspecClient {
     });
   }
 
-  async listSpecs(token: string): Promise<ListSpecsResponse> {
-    return this.request<ListSpecsResponse>('GET', '/public/specs', token);
+  async refreshSession(refreshToken: string): Promise<LoginResponse> {
+    return this.request<LoginResponse>('POST', '/public/auth/refresh', undefined, {
+      refresh_token: refreshToken,
+    });
   }
 
-  async getSpec(token: string, slug: string): Promise<GetSpecResponse> {
-    return this.request<GetSpecResponse>(
-      'GET',
-      `/public/specs/${encodeURIComponent(slug)}`,
-      token
-    );
+  /** List specs. Omit projectSlug to get specs from all projects. */
+  async listSpecs(token: string, projectSlug?: string): Promise<ListSpecsResponse> {
+    const path = projectSlug
+      ? `/public/specs?project_slug=${encodeURIComponent(projectSlug)}`
+      : '/public/specs';
+    return this.request<ListSpecsResponse>('GET', path, token);
+  }
+
+  async getSpec(token: string, slug: string, projectId?: string): Promise<GetSpecResponse> {
+    let path = `/public/specs/${encodeURIComponent(slug)}`;
+    if (projectId) {
+      path += `?project_id=${encodeURIComponent(projectId)}`;
+    }
+    console.log(`[mdspec] getSpec slug=${slug}, project_id=${projectId ?? 'none'}`);
+    return this.request<GetSpecResponse>('GET', path, token);
+  }
+
+  /** Get spec by id (uuid). Use for link flow when slug is ambiguous across projects. */
+  async getSpecById(token: string, specId: string): Promise<GetSpecResponse> {
+    const path = `/public/specs/${encodeURIComponent(specId)}`;
+    console.log(`[mdspec] getSpecById specId=${specId}`);
+    return this.request<GetSpecResponse>('GET', path, token);
+  }
+
+  /** Remove a linked spec. Accepts proxy id, source spec id, or slug. Pass project_slug or project_id when source is linked in multiple projects. */
+  async deleteLinkedSpec(
+    token: string,
+    slugOrIdOrSourceId: string,
+    options?: { project_slug?: string; project_id?: string }
+  ): Promise<{ success: boolean; message?: string }> {
+    let path = `/public/specs/${encodeURIComponent(slugOrIdOrSourceId)}`;
+    if (options?.project_id) {
+      path += `?project_id=${encodeURIComponent(options.project_id)}`;
+    } else if (options?.project_slug) {
+      path += `?project_slug=${encodeURIComponent(options.project_slug)}`;
+    }
+    return this.request('DELETE', path, token);
   }
 
   async createSpec(
