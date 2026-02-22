@@ -273,7 +273,17 @@ export class SyncEngine {
     }
 
     const doLink = async (t: string): Promise<SyncResult> => {
-      // Try by id first; if 404, try by slug + project_id (backend may support one or the other)
+      const projectSlug = this.configManager.getProjectSlug();
+      const orgSlug = this.configManager.getOrgSlug();
+      if (projectSlug) {
+        await this.client.createSpec(t, {
+          name: specName,
+          source_spec_id: specId,
+          file_name: path.basename(localRelativePath),
+          project_slug: projectSlug,
+          ...(orgSlug && { org_slug: orgSlug }),
+        });
+      }
       let response: Awaited<ReturnType<MdspecClient['getSpecById']>>;
       try {
         response = await this.client.getSpecById(t, specId);

@@ -2,7 +2,7 @@
   "name": "mdspec",
   "displayName": "mdspec",
   "description": "Manual sync between local Markdown files and the mdspec platform",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "publisher": "xadlabs",
   "license": "MIT",
   "repository": "https://github.com/mohzameer/mdspecdev",

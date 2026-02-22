@@ -142,7 +142,15 @@ export class MdspecClient {
     const path = projectSlug
       ? `/public/specs?project_slug=${encodeURIComponent(projectSlug)}`
       : '/public/specs';
-    return this.request<ListSpecsResponse>('GET', path, token);
+    const response = await this.request<ListSpecsResponse>('GET', path, token);
+    const summary = response.specs.map((s) => ({
+      id: s.id,
+      slug: s.slug,
+      is_linked: s.is_linked ?? (s as { isLinked?: boolean }).isLinked,
+      source_spec_id: s.source_spec_id ?? (s as { sourceSpecId?: string }).sourceSpecId,
+    }));
+    console.log('[mdspec] listSpecs', projectSlug ? `project_slug=${projectSlug}` : 'all', JSON.stringify(summary, null, 2));
+    return response;
   }
 
   async getSpec(token: string, slug: string, projectId?: string): Promise<GetSpecResponse> {
@@ -180,7 +188,8 @@ export class MdspecClient {
     token: string,
     params: {
       name: string;
-      content: string;
+      content?: string;
+      source_spec_id?: string;
       file_name?: string;
       project_slug?: string;
       org_slug?: string;
