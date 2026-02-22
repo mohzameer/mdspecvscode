@@ -69,7 +69,8 @@ export class SyncEngine {
         vscode.window.showInformationMessage(`mdspec: No changes in ${relativePath}`);
         return { status: 'no-change' };
       }
-      return this.subsequentSync(relativePath, entry.slug, content, currentHash, t);
+      const slugOrId = entry.specId ?? entry.slug;
+      return this.subsequentSync(relativePath, slugOrId, content, currentHash, t, entry);
     };
 
     try {
@@ -124,13 +125,14 @@ export class SyncEngine {
 
   private async subsequentSync(
     relativePath: string,
-    slug: string,
+    slugOrId: string,
     content: string,
     hash: string,
-    token: string
+    token: string,
+    entry?: { slug?: string; specId?: string }
   ): Promise<SyncResult> {
     try {
-      const response = await this.client.uploadRevision(token, slug, { content });
+      let response = await this.client.uploadRevision(token, slugOrId, { content });
 
       // Handle deduplication response
       if (response.message) {
@@ -159,6 +161,50 @@ export class SyncEngine {
       return { status: 'success', revisionNumber: response.revision?.revision_number };
     } catch (err) {
       if (err instanceof MdspecApiError && err.statusCode === 401) throw err;
+      // 404 when using slug can happen if the same slug exists as a linked spec; server may resolve to the proxy. Resolve source spec by id and retry.
+      if (
+        err instanceof MdspecApiError &&
+        err.statusCode === 404 &&
+        entry?.slug &&
+        slugOrId === entry.slug
+      ) {
+        const list = await this.client.listSpecs(token);
+        const isLinked = (s: { is_linked?: boolean; isLinked?: boolean }) =>
+          s.is_linked ?? (s as { isLinked?: boolean }).isLinked ?? false;
+        const norm = (x: string) => (x ?? '').toLowerCase().trim();
+        const sourceSpec = list.specs.find(
+          (s) => !isLinked(s) && norm(s.slug) === norm(entry.slug!)
+        );
+        if (sourceSpec?.id) {
+          const retryResponse = await this.client.uploadRevision(token, sourceSpec.id, {
+            content,
+          });
+          if (retryResponse.message) {
+            vscode.window.showInformationMessage(`mdspec: ${retryResponse.message}`);
+            const e = this.configManager.getTrackedFile(relativePath);
+            await this.configManager.setTrackedFile(relativePath, {
+              ...e,
+              specId: sourceSpec.id,
+              lastHash: hash,
+            });
+            return { status: 'no-change' };
+          }
+          const contentHash = retryResponse.revision?.content_hash ?? hash;
+          const e = this.configManager.getTrackedFile(relativePath);
+          await this.configManager.setTrackedFile(relativePath, {
+            ...e,
+            specId: sourceSpec.id,
+            lastHash: contentHash,
+          });
+          vscode.window.showInformationMessage(
+            `mdspec: Synced ${relativePath} → revision ${retryResponse.revision?.revision_number}`
+          );
+          return {
+            status: 'success',
+            revisionNumber: retryResponse.revision?.revision_number,
+          };
+        }
+      }
       return this.handleSyncError(err, relativePath);
     }
   }

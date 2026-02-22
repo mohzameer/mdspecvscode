@@ -106,7 +106,6 @@ export class MdspecClient {
 
     if (body) {
       options.body = JSON.stringify(body);
-      console.log(`[mdspec] Request body:`, JSON.stringify(body, null, 2));
     }
 
     console.log(`[mdspec] ${method} ${url}`);
